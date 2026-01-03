@@ -1,0 +1,67 @@
+services:
+  # 1. Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: spender_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-spender}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-spender}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Queue
+  redis:
+    image: redis:7-alpine
+    container_name: spender_queue
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 3. Migration Sidecar
+  # This container runs once, applies your /migration folder files, then exits.
+  migrate:
+    image: migrate/migrate
+    container_name: spender_migrator
+    volumes:
+      - ./migration:/migration
+    command:
+      - -path=/migration/
+      - -database=postgres://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-spender}?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 4. Your Go Application
+  app:
+    build: .
+    container_name: spender_api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-spender}?sslmode=disable
+      - REDIS_ADDR=redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
